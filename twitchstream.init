@@ -1,0 +1,64 @@
+#! /bin/sh
+### BEGIN INIT INFO
+# Provides:          twitchstream
+# Required-Start:    $network $named
+# Required-Stop:     $network $named
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: Start daemon at boot time
+# Description:       Enable service provided by daemon.
+### END INIT INFO
+
+NAME=twitchstream
+DAEMON=/usr/local/bin/twitchstream
+DAEMON_ARGS=""
+PIDFILE=/var/run/$NAME.pid
+
+# If the daemon is not there, then exit.
+test -x $DAEMON || exit 5
+
+# Read configuration variable file if it is present
+[ -r /etc/default/$NAME ] && . /etc/default/$NAME
+
+# Load the VERBOSE setting and other rcS variables
+. /lib/init/vars.sh
+
+# Define LSB log_* functions.
+# Depend on lsb-base (>= 3.2-14) to ensure that this file is present
+# and status_of_proc is working.
+. /lib/lsb/init-functions
+
+case "$1" in
+	start)
+		# Start the daemon.
+		log_daemon_msg "Starting twitchstream daemons"
+		# Start the daemon with the help of start-stop-daemon
+		# Log the message appropriately
+		if start-stop-daemon --start --quiet --oknodo --pidfile $PIDFILE --make-pidfile --background --no-close --exec $DAEMON -- $DAEMON_ARGS >> /var/log/twitchstream.log 2>&1 ; then
+			log_end_msg 0
+		else
+			log_end_msg 1
+		fi
+		;;
+	stop)
+		# Stop the daemon.
+		log_daemon_msg "Stopping twitchstream daemons"
+		start-stop-daemon --stop --quiet --oknodo --pidfile $PIDFILE
+		# Wait a little and remove stale PID file
+		sleep 1
+		rm -f $PIDFILE
+		log_end_msg 0
+		;;
+	restart|force-reload)
+		# Restart the daemon.
+		$0 stop
+		sleep 1
+		$0 start
+		;;
+	*)
+		echo "Usage: /etc/init.d/twitchstream {start|stop|restart|force-reload}"
+		exit 1
+		;;
+esac
+
+exit 0

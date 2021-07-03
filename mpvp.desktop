@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=mpv url player
+Icon=mpv
+Exec=mpv.sh %u
+Terminal=false
+MimeType=x-scheme-handler/mpv;
