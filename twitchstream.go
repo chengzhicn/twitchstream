@@ -25,15 +25,15 @@ import (
 // for each chunk send 16 * 64k request, each request download to fixed position in buffer and with retry, send back error to error chan
 // and send back wheather it's done
 
-func doRequest(ctx context.Context, client *http.Client, method, url, rng string) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, method, url, nil)
+func doRequest(ctx context.Context, client *http.Client, method, url, rng string, body io.Reader) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, method, url, body)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:72.0) Gecko/20100101 Firefox/72.0")
 	req.Header.Set("Accept", "*/*")
 	req.Header.Set("Referer", "https://www.twitch.tv/")
-	req.Header.Set("client-id", "jzkbprff40iqj646a697cyrvl0zt2m6")
+	req.Header.Set("client-id", "kimne78kx3ncx6brgo4mv6wki5h1ko")
 	if rng != "" {
 		req.Header.Set("Range", "bytes="+rng)
 	}
@@ -64,7 +64,7 @@ func downloadPart(ctx context.Context, client *http.Client, url string, b []byte
 	var rsp *http.Response
 	var err error
 	for retry := 0; retry < 3 && start < len(b); retry++ {
-		if rsp, err = doRequest(ctx, client, "GET", url, strconv.Itoa(offset+start)+"-"+strconv.Itoa(offset+len(b)-1)); err != nil {
+		if rsp, err = doRequest(ctx, client, "GET", url, strconv.Itoa(offset+start)+"-"+strconv.Itoa(offset+len(b)-1), nil); err != nil {
 			continue
 		} else if rsp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
 			rsp.Body.Close()
@@ -172,24 +172,39 @@ func (ts *TwitchStream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusBadGateway)
 		}
 	}()
-	var auth map[string]interface{}
+	var auth struct {
+		Data struct {
+			StreamPlaybackAccessToken struct {
+				Value     string
+				Signature string
+			}
+		}
+	}
 	var m3u string
 	chunks := make(chan string, 32)
 	out := make(chan chan []byte, 8)
 	user := strings.TrimLeft(r.URL.RequestURI(), "/")
-	if data, err := verifyRequest(readRequest(doRequest(r.Context(), ts.cc, "GET", "https://api.twitch.tv/api/channels/"+user+"/access_token?platform=ios", ""))); err != nil {
+	gql := map[string]interface{}{
+		"operationName": "PlaybackAccessToken_Template",
+		"query":         `query PlaybackAccessToken_Template($login: String!) {streamPlaybackAccessToken(channelName: $login, params: {platform: "ios", playerBackend: "mediaplayer", playerType: "site"}) {value signature}}`,
+		"variables":     map[string]interface{}{"login": user},
+	}
+	if gqls, err := json.Marshal(gql); err != nil {
+		log.Printf("marshal user request %s: %s\n", user, err.Error())
+		return
+	} else if data, err := verifyRequest(readRequest(doRequest(r.Context(), ts.cc, "POST", "https://gql.twitch.tv/gql", "", bytes.NewReader(gqls)))); err != nil {
 		log.Printf("user request %s: %s\n", user, err.Error())
 		return
 	} else if err = json.Unmarshal(data, &auth); err != nil {
 		log.Printf("failed to decode user request %s: %s\n", user, err.Error())
 		return
-	} else if sig, ok := auth["sig"].(string); !ok {
+	} else if sig := auth.Data.StreamPlaybackAccessToken.Signature; sig == "" {
 		log.Printf("user request %s didn't have sig\n", user)
 		return
-	} else if token, ok := auth["token"].(string); !ok {
+	} else if token := auth.Data.StreamPlaybackAccessToken.Value; token == "" {
 		log.Printf("user request %s didn't have token\n", user)
 		return
-	} else if data, err = verifyRequest(readRequest(doRequest(r.Context(), ts.dc, "GET", "https://usher.ttvnw.net/api/channel/hls/"+user+".m3u8?allow_source=true&fast_bread=true&sig="+sig+"&token="+url.QueryEscape(token), ""))); err != nil {
+	} else if data, err = verifyRequest(readRequest(doRequest(r.Context(), ts.dc, "GET", "https://usher.ttvnw.net/api/channel/hls/"+user+".m3u8?allow_source=true&fast_bread=true&sig="+sig+"&token="+url.QueryEscape(token), "", nil))); err != nil {
 		log.Printf("playlist request %s: %s\n", user, err.Error())
 		return
 	} else if m3us, _, err := m3uReader(bytes.NewReader(data)); err != nil {
@@ -207,7 +222,7 @@ func (ts *TwitchStream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		for {
 			time.Sleep(1 * time.Second)
 			var segs []string
-			if status, data, err := readRequest(doRequest(r.Context(), ts.dc, "GET", m3u, "")); status == 404 || r.Context().Err() == context.Canceled {
+			if status, data, err := readRequest(doRequest(r.Context(), ts.dc, "GET", m3u, "", nil)); status == 404 || r.Context().Err() == context.Canceled {
 				return
 			} else if _, err = verifyRequest(status, data, err); err != nil {
 				log.Printf("m3u request %s(%s): %s\n", user, m3u, err.Error())
